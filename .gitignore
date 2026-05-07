@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+venv/
+.venv/
+*.egg
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# PyInstaller
+*.spec.bak
+
+# py2app build output
+PortCheckerMenuBarPy/build/
+PortCheckerMenuBarPy/dist/
+
+# Xcode
+*.xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+# Bundled CLI binary (built artifact, not source)
+swift/PortCheckerMenuBar/Resources/portchecker
+
+# Memsearch index
+.memsearch/

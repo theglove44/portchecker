@@ -1,0 +1,13 @@
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+mypy>=1.0.0
+ruff>=0.1.0
+
+# Build tools
+pyinstaller>=6.0.0
+py2app>=0.28.0
+
+# Type stubs
+types-psutil
