@@ -1,518 +1,397 @@
 #!/usr/bin/env python3
-"""Enhanced Port Checker Menu Bar App using rumps."""
+"""Port Checker — macOS menu bar app."""
 
 import json
-import os
+import queue
 import subprocess
+import sys
 import threading
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import rumps
-from AppKit import NSModalResponseOK, NSOpenPanel
 
-APP_NAME = "Ports"
-APP_VERSION = "1.0.0"
+# When running from the project venv in dev mode, pull in the src package.
+_src = Path(__file__).parent.parent / "src"
+if _src.exists():
+    sys.path.insert(0, str(_src))
 
-CONFIG_DIR = os.path.join(
-    os.path.expanduser("~"),
-    "Library",
-    "Application Support",
-    "PortCheckerMenuBar",
+from portchecker.config import load_favorites
+from portchecker.models import PORT_SERVICES, PortProcess
+from portchecker.process_control import can_stop_process, stop_process
+from portchecker.scanner import enrich_processes, scan_ports
+
+VERSION = "1.0.0"
+PREFS_FILE = (
+    Path.home() / "Library" / "Application Support" / "PortChecker" / "prefs.json"
 )
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
-
-# Default config
-DEFAULT_CONFIG = {
-    "cli_path": "",
-    "show_system": False,
-    "auto_refresh": True,
-    "refresh_interval": 30,
-    "show_notifications": True,
-    "favorites": [],
-}
+REFRESH_OPTIONS = [10, 30, 60, 300]
+REFRESH_LABELS = {10: "10 sec", 30: "30 sec", 60: "1 min", 300: "5 min"}
+HTTP_SERVICES = {"HTTP", "HTTP-Alt", "HTTPS", "HTTPS-Alt"}
 
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from file."""
-    if not os.path.exists(CONFIG_PATH):
-        return DEFAULT_CONFIG.copy()
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = json.load(f)
-            # Merge with defaults
-            merged = DEFAULT_CONFIG.copy()
-            merged.update(config)
-            return merged
-    except (OSError, json.JSONDecodeError):
-        return DEFAULT_CONFIG.copy()
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def save_config(config: Dict[str, Any]) -> None:
-    """Save configuration to file."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+def _svc_name(port: int) -> str:
+    return PORT_SERVICES[port][0] if port in PORT_SERVICES else ""
 
 
-def find_cli_in_path() -> Optional[str]:
-    """Find portchecker in PATH."""
-    try:
-        result = subprocess.run(
-            ["/usr/bin/which", "portchecker"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            return path if path else None
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return None
+def _is_http(port: int) -> bool:
+    return _svc_name(port) in HTTP_SERVICES
 
 
-def get_bundled_cli() -> Optional[str]:
-    """Get CLI bundled with the app."""
-    # Get the app bundle directory (py2app places resources in Contents/Resources)
-    bundle_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    # Try various locations for bundled CLI
-    candidates = [
-        # Directly in Resources (py2app with DATA_FILES)
-        os.path.join(bundle_dir, "Resources", "portchecker"),
-        # Nested Resources/Resources (py2app quirk)
-        os.path.join(bundle_dir, "Resources", "Resources", "portchecker"),
-        # Direct in bundle dir
-        os.path.join(bundle_dir, "portchecker"),
-        # Relative to build dir
-        os.path.join(bundle_dir, "..", "dist", "portchecker"),
-        os.path.join(bundle_dir, "..", "..", "dist", "portchecker"),
-    ]
-    
-    for candidate in candidates:
-        resolved = os.path.abspath(candidate)
-        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
-            return resolved
-    
-    return None
+def _service_line(proc: PortProcess) -> str:
+    """Single readable line: :port  App Name  [SVC]"""
+    app = proc.app or proc.command
+    svc = _svc_name(proc.port)
+    tag = f"  [{svc}]" if svc and svc.lower() not in app.lower() else ""
+    return f":{proc.port}  {app}{tag}"
 
 
-def resolve_cli_path(config: Dict[str, Any]) -> Optional[str]:
-    """Resolve CLI path from various sources."""
-    # 1. Configured path
-    config_path = config.get("cli_path", "").strip()
-    if config_path and os.path.isfile(config_path) and os.access(config_path, os.X_OK):
-        return config_path
-    
-    # 2. Environment variable
-    env_path = os.environ.get("PORTCHECKER_CLI", "").strip()
-    if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
-        return env_path
-    
-    # 3. Bundled CLI
-    bundled = get_bundled_cli()
-    if bundled:
-        return bundled
-    
-    # 4. PATH
-    return find_cli_in_path()
+def _copy(text: str) -> None:
+    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+
+
+def _inert(title: str) -> rumps.MenuItem:
+    """Non-clickable info item."""
+    item = rumps.MenuItem(title)
+    item.set_callback(None)
+    return item
+
+
+def _divider() -> rumps.MenuItem:
+    """Visual divider for use inside submenus."""
+    return _inert("─" * 18)
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
 
 
 class PortCheckerApp(rumps.App):
-    """Main menu bar application."""
-    
     def __init__(self) -> None:
-        super().__init__(APP_NAME, template=True)
-        self.config = load_config()
-        self.services: List[Dict[str, Any]] = []
-        self.last_error: Optional[str] = "Initializing..."
-        self.last_services_state: set = set()
-        
-        # Setup auto-refresh timer
-        self.timer: Optional[rumps.Timer] = None
-        self._setup_timer()
-        
-        # Initial refresh
-        self.refresh()
-    
-    def _setup_timer(self) -> None:
-        """Setup auto-refresh timer."""
-        if self.timer:
-            self.timer.stop()
-        
-        if self.config.get("auto_refresh", True):
-            interval = self.config.get("refresh_interval", 30)
-            self.timer = rumps.Timer(self._auto_refresh, interval)
-            self.timer.start()
-    
-    def _auto_refresh(self, sender: rumps.Timer) -> None:
-        """Auto-refresh callback."""
-        # Run in background thread
-        threading.Thread(target=self._refresh_async, daemon=True).start()
-    
-    def _refresh_async(self) -> None:
-        """Async refresh for timer."""
-        services, _ = self.scan_services()
-        self.services = services
-        
-        # Check for changes
-        if self.config.get("show_notifications", True):
-            self._check_changes(services)
-        
-        # Update menu on main thread
-        rumps.Timer(lambda _: self.update_menu(), 0.01).start()
-    
-    def _check_changes(self, current_services: List[Dict[str, Any]]) -> None:
-        """Check for service changes and notify."""
-        current_ports = {s.get("port") for s in current_services}
-        
-        # New services
-        new_ports = current_ports - self.last_services_state
-        for port in new_ports:
-            service = next((s for s in current_services if s.get("port") == port), None)
-            if service and not service.get("is_system"):
-                self._notify("Service Started", f"{service.get('app', 'Unknown')} on port {port}")
-        
-        # Stopped services
-        stopped_ports = self.last_services_state - current_ports
-        for port in stopped_ports:
-            self._notify("Service Stopped", f"Port {port} is no longer active")
-        
-        self.last_services_state = current_ports
-    
-    def _notify(self, title: str, message: str) -> None:
-        """Show notification."""
+        super().__init__("Ports", template=True)
+
+        # Preferences (persisted)
+        self._auto_refresh: bool = True
+        self._refresh_interval: int = 30
+        self._show_system: bool = False
+        self._notifications: bool = True
+        self._load_prefs()
+
+        # Runtime state
+        self._procs: list[PortProcess] = []
+        self._scanning: bool = False
+        self._last_updated: str = ""
+        self._prev_ports: set[int] = set()
+        self._first_scan: bool = True  # suppress startup notifications
+
+        # Producer/consumer: background thread → queue → main-thread drain timer.
+        # This is the only safe way to trigger a UI rebuild from a background thread
+        # in rumps — NSTimer scheduled from a non-main thread won't fire.
+        self._results: queue.Queue[list[PortProcess]] = queue.Queue()
+        self._poll = rumps.Timer(self._drain, 0.1)
+        self._poll.start()
+
+        # Auto-refresh timer (fires on main thread, kicks off background scan)
+        self._timer: rumps.Timer | None = None
+        self._start_timer()
+
+        # Initial scan
+        threading.Thread(target=self._scan, daemon=True).start()
+
+    # ── Preferences ───────────────────────────────────────────────────────
+
+    def _load_prefs(self) -> None:
         try:
-            rumps.notification(title, "", message)
+            with open(PREFS_FILE) as f:
+                p = json.load(f)
+            self._auto_refresh = bool(p.get("auto_refresh", True))
+            self._refresh_interval = int(p.get("refresh_interval", 30))
+            self._show_system = bool(p.get("show_system", False))
+            self._notifications = bool(p.get("notifications", True))
         except Exception:
-            pass  # Notifications may not be available
-    
-    def refresh(self, _sender: Optional[rumps.MenuItem] = None) -> None:
-        """Manually refresh services."""
-        services, error = self.scan_services()
-        self.last_error = error
-        self.services = services
-        self.last_services_state = {s.get("port") for s in services}
-        self.update_menu()
-    
-    def scan_services(self) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """Scan for services."""
-        cli_path = resolve_cli_path(self.config)
-        if not cli_path:
-            # Debug: show what paths were tried
-            paths_checked = [
-                self.config.get("cli_path", ""),
-                os.environ.get("PORTCHECKER_CLI", ""),
-                get_bundled_cli(),
-                find_cli_in_path(),
-            ]
-            checked_str = ", ".join([p for p in paths_checked if p]) or "none"
-            return [], f"CLI not found. Checked: {checked_str[:60]}"
-        
-        # Debug: verify CLI is executable
-        if not os.access(cli_path, os.X_OK):
-            return [], f"CLI not executable: {cli_path[-40:]}"
-        
-        args = [cli_path, "scan", "--json"]
-        if self.config.get("show_system", False):
-            args.append("--show-system")
-        
-        try:
-            result = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=15,
+            pass
+
+    def _save_prefs(self) -> None:
+        PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PREFS_FILE, "w") as f:
+            json.dump(
+                {
+                    "auto_refresh": self._auto_refresh,
+                    "refresh_interval": self._refresh_interval,
+                    "show_system": self._show_system,
+                    "notifications": self._notifications,
+                },
+                f,
+                indent=2,
             )
-        except (OSError, subprocess.TimeoutExpired) as e:
-            return [], f"Failed to run: {str(e)[:50]}"
-        except Exception as e:
-            return [], f"Error: {str(e)[:50]}"
-        
-        if result.returncode != 0:
-            stderr = result.stderr.strip() if result.stderr else ""
-            stdout = result.stdout.strip() if result.stdout else ""
-            message = stderr or stdout or f"Exit code {result.returncode}"
-            return [], f"CLI error: {message[:60]}"
-        
-        output = result.stdout.strip()
-        stderr_output = result.stderr.strip() if result.stderr else ""
-        
-        # Debug: log raw output
-        debug_info = f"Exit:{result.returncode} Out:{len(output)} Err:{len(stderr_output)}"
-        if output:
-            debug_info += f" First100:{output[:100]}"
-        if stderr_output:
-            debug_info += f" Err:{stderr_output[:50]}"
-        
-        if not output:
-            return [], f"Empty output. {debug_info}"
-        
+
+    # ── Timers ────────────────────────────────────────────────────────────
+
+    def _start_timer(self) -> None:
+        if self._timer:
+            self._timer.stop()
+        if self._auto_refresh:
+            self._timer = rumps.Timer(self._on_timer, self._refresh_interval)
+            self._timer.start()
+
+    def _on_timer(self, _: Any) -> None:
+        """Auto-refresh: kick off a background scan."""
+        if not self._scanning:
+            threading.Thread(target=self._scan, daemon=True).start()
+
+    # ── Scanning ──────────────────────────────────────────────────────────
+
+    def _scan(self) -> None:
+        """Run in a background thread. Posts result to queue for main thread."""
+        self._scanning = True
         try:
-            data = json.loads(output)
-        except json.JSONDecodeError as e:
-            return [], f"JSON error: {str(e)[:30]}. Raw:{output[:50]}"
-        
-        if not isinstance(data, list):
-            return [], f"Expected list, got {type(data).__name__}"
-        
-        # Sort by port
-        data.sort(key=lambda item: item.get("port", 0))
-        return data, None
-    
-    def update_menu(self) -> None:
-        """Update the menu with current services."""
+            procs = enrich_processes(scan_ports(), self._show_system)
+        except Exception:
+            procs = []
+        self._scanning = False
+        self._results.put(procs)
+
+    def _drain(self, _: Any) -> None:
+        """Main-thread poll timer. Picks up completed scans and rebuilds menu."""
+        try:
+            procs = self._results.get_nowait()
+        except queue.Empty:
+            return
+
+        self._procs = procs
+        self._last_updated = datetime.now().strftime("%-I:%M %p")
+
+        if self._first_scan:
+            # On startup, just snapshot — don't fire a notification for every
+            # already-running service.
+            self._prev_ports = {p.port for p in procs if not p.is_system}
+            self._first_scan = False
+        elif self._notifications:
+            try:
+                self._notify_changes(procs)
+            except Exception:
+                pass
+
+        self._rebuild()
+
+    def _notify_changes(self, procs: list[PortProcess]) -> None:
+        cur = {p.port for p in procs if not p.is_system}
+        for port in cur - self._prev_ports:
+            proc = next((p for p in procs if p.port == port), None)
+            if proc:
+                name = proc.app or proc.command
+                rumps.notification("Port Checker", "Started", f"{name}  :{port}")
+        for port in self._prev_ports - cur:
+            rumps.notification("Port Checker", "Stopped", f":{port} closed")
+        self._prev_ports = cur
+
+    # ── Menu ──────────────────────────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        try:
+            self._rebuild_menu()
+        except Exception as e:
+            self.menu.clear()
+            self.menu.add(_inert(f"⚠️  Error: {e}"))
+            self.menu.add(rumps.separator)
+            self.menu.add(rumps.MenuItem("Quit", callback=rumps.quit_application))
+
+    def _rebuild_menu(self) -> None:
+        dev = [p for p in self._procs if not p.is_system]
+        sys_procs = [p for p in self._procs if p.is_system]
+
+        count = len(dev)
+        self.title = f"Ports  {count}" if count else "Ports"
+
         self.menu.clear()
-        
-        # Update icon badge
-        count = len([s for s in self.services if not s.get("is_system")])
-        self.title = APP_NAME if count == 0 else f"{APP_NAME} ({count})"
-        
-        # Show CLI path for debugging
-        cli_path = resolve_cli_path(self.config)
-        if cli_path:
-            cli_display = f"CLI: ...{cli_path[-30:]}" if len(cli_path) > 30 else f"CLI: {cli_path}"
-            cli_item = rumps.MenuItem(cli_display)
-            cli_item.set_callback(None)
-            self.menu.add(cli_item)
+
+        fav_ports = {f["port"] for f in load_favorites()}
+        favs = [p for p in dev if p.port in fav_ports]
+        rest = [p for p in dev if p.port not in fav_ports]
+
+        # ── Favorites ──
+        if favs:
+            self.menu.add(_inert("⭐  Favorites"))
+            for proc in favs:
+                self.menu.add(self._service_item(proc))
             self.menu.add(rumps.separator)
-        
-        # Error message
-        if self.last_error:
-            error_item = rumps.MenuItem(f"⚠️ {self.last_error[:50]}")
-            error_item.set_callback(None)
-            self.menu.add(error_item)
+
+        # ── Dev services grouped by project ──
+        if rest:
+            groups: dict[str, list[PortProcess]] = {}
+            for proc in rest:
+                groups.setdefault(proc.project or "Other", []).append(proc)
+
+            first = True
+            for project in sorted(
+                groups, key=lambda x: (x in ("Unknown", "Other"), x.lower())
+            ):
+                if not first:
+                    self.menu.add(rumps.separator)
+                first = False
+                self.menu.add(_inert(f"📁  {project}"))
+                for proc in groups[project]:
+                    self.menu.add(self._service_item(proc, indent=True))
+
+        if not dev:
+            self.menu.add(_inert("No services running"))
+
+        # ── System services (when shown) ──
+        if sys_procs and self._show_system:
             self.menu.add(rumps.separator)
-        
-        # Services grouped by project
-        if not self.services:
-            empty_item = rumps.MenuItem("No ports in use")
-            empty_item.set_callback(None)
-            self.menu.add(empty_item)
-            
-            # Debug: show error if any
-            if self.last_error:
-                debug_item = rumps.MenuItem(f"Debug: {self.last_error[:40]}")
-                debug_item.set_callback(None)
-                self.menu.add(debug_item)
+            self.menu.add(_inert("🔒  System"))
+            for proc in sys_procs:
+                self.menu.add(_inert(f"    :{proc.port}  {proc.command}"))
+
+        self.menu.add(rumps.separator)
+
+        # ── Timestamp + Refresh ──
+        if self._last_updated:
+            self.menu.add(_inert(f"Updated {self._last_updated}"))
+
+        refresh = rumps.MenuItem("Refresh", callback=self._on_refresh)
+        refresh._menuitem.setKeyEquivalentModifierMask_(1 << 20)
+        refresh._menuitem.setKeyEquivalent_("r")
+        self.menu.add(refresh)
+
+        self.menu.add(rumps.separator)
+
+        # ── Auto-refresh submenu ──
+        if self._auto_refresh:
+            auto_label = f"Auto-refresh  ({REFRESH_LABELS[self._refresh_interval]})"
         else:
-            self._add_grouped_services()
-        
+            auto_label = "Auto-refresh  (off)"
+        auto = rumps.MenuItem(auto_label)
+        auto.state = 1 if self._auto_refresh else 0
+
+        toggle = rumps.MenuItem(
+            "Enabled" if self._auto_refresh else "Disabled",
+            callback=self._toggle_auto_refresh,
+        )
+        toggle.state = 1 if self._auto_refresh else 0
+        auto.add(toggle)
+        auto.add(_divider())
+
+        for secs in REFRESH_OPTIONS:
+            opt = rumps.MenuItem(
+                REFRESH_LABELS[secs],
+                callback=self._make_interval_setter(secs),
+            )
+            opt.state = 1 if (self._auto_refresh and secs == self._refresh_interval) else 0
+            auto.add(opt)
+
+        self.menu.add(auto)
+
+        show_sys = rumps.MenuItem(
+            "Show system services", callback=self._toggle_show_system
+        )
+        show_sys.state = 1 if self._show_system else 0
+        self.menu.add(show_sys)
+
+        notifs = rumps.MenuItem("Notifications", callback=self._toggle_notifications)
+        notifs.state = 1 if self._notifications else 0
+        self.menu.add(notifs)
+
         self.menu.add(rumps.separator)
-        
-        # Refresh button
-        refresh_item = rumps.MenuItem("🔄 Refresh", callback=self.refresh)
-        refresh_item._menuitem.setKeyEquivalentModifierMask_(1 << 20)  # Cmd
-        refresh_item._menuitem.setKeyEquivalent_("r")
-        self.menu.add(refresh_item)
-        
-        # Show system toggle
-        show_system_item = rumps.MenuItem("Show System Services")
-        show_system_item.state = 1 if self.config.get("show_system") else 0
-        show_system_item.set_callback(self.toggle_system_services)
-        self.menu.add(show_system_item)
-        
-        # Stop all
-        stop_all_item = rumps.MenuItem("⏹ Stop All Listed", callback=self.stop_all)
-        non_system = [s for s in self.services if not s.get("is_system")]
-        if not non_system:
-            stop_all_item.set_callback(None)
-        self.menu.add(stop_all_item)
-        
-        self.menu.add(rumps.separator)
-        
-        # Settings
-        settings_item = rumps.MenuItem("⚙️ Settings...", callback=self.show_settings)
-        settings_item._menuitem.setKeyEquivalentModifierMask_(1 << 20)  # Cmd
-        settings_item._menuitem.setKeyEquivalent_(",")
-        self.menu.add(settings_item)
-        
-        # About
-        about_item = rumps.MenuItem(f"ℹ️ About Port Checker {APP_VERSION}", callback=self.show_about)
-        self.menu.add(about_item)
-        
-        # Quit
+
         quit_item = rumps.MenuItem("Quit", callback=rumps.quit_application)
-        quit_item._menuitem.setKeyEquivalentModifierMask_(1 << 20)  # Cmd
+        quit_item._menuitem.setKeyEquivalentModifierMask_(1 << 20)
         quit_item._menuitem.setKeyEquivalent_("q")
         self.menu.add(quit_item)
-    
-    def _add_grouped_services(self) -> None:
-        """Add services grouped by project."""
-        # Group by project
-        favorites = self.config.get("favorites", [])
-        favorite_ports = {f["port"] for f in favorites}
-        
-        grouped: Dict[str, List[Dict]] = {}
-        favorite_services = []
-        system_services = []
-        
-        for svc in self.services:
-            if svc.get("port") in favorite_ports:
-                favorite_services.append(svc)
-            elif svc.get("is_system"):
-                system_services.append(svc)
-            else:
-                project = svc.get("project", "Other")
-                grouped.setdefault(project, []).append(svc)
-        
-        # Add favorites section
-        if favorite_services:
-            fav_header = rumps.MenuItem("⭐ FAVORITES")
-            fav_header.set_callback(None)
-            self.menu.add(fav_header)
-            for svc in favorite_services:
-                self._add_service_item(svc)
-            self.menu.add(rumps.separator)
-        
-        # Add projects
-        for project in sorted(grouped.keys(), key=lambda x: (x == "Other", x.lower())):
-            services = grouped[project]
-            
-            # Project header
-            header = rumps.MenuItem(f"📁 {project}")
-            header.set_callback(None)
-            self.menu.add(header)
-            
-            for svc in services:
-                self._add_service_item(svc, indent=True)
-        
-        # Add system services
-        if system_services and self.config.get("show_system"):
-            self.menu.add(rumps.separator)
-            sys_header = rumps.MenuItem("🔒 SYSTEM SERVICES")
-            sys_header.set_callback(None)
-            self.menu.add(sys_header)
-            for svc in system_services:
-                self._add_service_item(svc, is_system=True)
-    
-    def _add_service_item(self, service: Dict[str, Any], indent: bool = False, is_system: bool = False) -> None:
-        """Add a single service menu item."""
-        port = service.get("port", "?")
-        app = service.get("app", "Unknown")
-        project = service.get("project", "")
-        
-        prefix = "    " if indent else ""
-        exposed = "🌐" if service.get("is_exposed") else ""
-        icon = "🔒" if is_system else (exposed or "●")
-        
-        title = f"{prefix}{icon} {port}: {app}"
-        if project and project not in ["Unknown", "Other"] and not indent:
-            title += f" ({project})"
-        
-        if is_system:
-            item = rumps.MenuItem(title)
-            item.set_callback(None)
-        else:
-            def on_click(_sender, svc=service):
-                self.stop_service(svc)
-            item = rumps.MenuItem(title, callback=on_click)
-        
-        self.menu.add(item)
-    
-    def toggle_system_services(self, _sender: rumps.MenuItem) -> None:
-        """Toggle showing system services."""
-        self.config["show_system"] = not self.config.get("show_system", False)
-        save_config(self.config)
-        self.refresh()
-    
-    def stop_service(self, service: Dict[str, Any]) -> None:
-        """Stop a single service."""
-        if service.get("is_system"):
-            rumps.alert("Cannot Stop", "System services cannot be stopped.")
+
+    # ── Service submenu ───────────────────────────────────────────────────
+
+    def _service_item(self, proc: PortProcess, indent: bool = False) -> rumps.MenuItem:
+        pad = "    " if indent else ""
+        exposed = "  🌐" if proc.is_exposed else ""
+        parent = rumps.MenuItem(f"{pad}{_service_line(proc)}{exposed}")
+
+        app = proc.app or proc.command
+        port = proc.port
+
+        parent.add(_inert(f"Port:    {port}"))
+        parent.add(_inert(f"App:     {app}"))
+        parent.add(_inert(f"PID:     {proc.pid}"))
+        parent.add(_inert(f"User:    {proc.user}"))
+        if proc.project and proc.project not in ("Unknown", "Other", "Ended", "Unavailable"):
+            parent.add(_inert(f"Project: {proc.project}"))
+
+        parent.add(_divider())
+
+        parent.add(rumps.MenuItem(
+            f"Copy  :{port}",
+            callback=lambda _, p=port: _copy(str(p)),
+        ))
+        parent.add(rumps.MenuItem(
+            f"Copy  localhost:{port}",
+            callback=lambda _, p=port: _copy(f"localhost:{p}"),
+        ))
+        if _is_http(port):
+            parent.add(rumps.MenuItem(
+                "Open in browser",
+                callback=lambda _, p=port: subprocess.run(["open", f"http://localhost:{p}"]),
+            ))
+
+        parent.add(_divider())
+
+        parent.add(rumps.MenuItem(
+            "Stop service…",
+            callback=lambda _, p=proc: self._stop(p),
+        ))
+
+        return parent
+
+    # ── Callbacks ─────────────────────────────────────────────────────────
+
+    def _stop(self, proc: PortProcess) -> None:
+        ok, reason = can_stop_process(proc)
+        if not ok:
+            rumps.alert("Cannot stop", reason)
             return
-        
-        app = service.get("app", "Unknown")
-        port = service.get("port", "?")
-        project = service.get("project", "")
-        pid = service.get("pid")
-        
-        message = f"Port {port}"
-        if project and project != "Unknown":
-            message += f"\nProject: {project}"
-        message += f"\nPID: {pid}"
-        
-        confirm = rumps.alert(
+        app = proc.app or proc.command
+        if rumps.alert(
             f"Stop {app}?",
-            message,
+            f"Port {proc.port}  ·  PID {proc.pid}",
             ok="Stop",
             cancel="Cancel",
-        )
-        
-        if confirm == 1:
-            self.run_stop(pid)
-    
-    def stop_all(self, _sender: rumps.MenuItem) -> None:
-        """Stop all non-system services."""
-        targets = [s for s in self.services if not s.get("is_system")]
-        if not targets:
-            return
-        
-        confirm = rumps.alert(
-            f"Stop {len(targets)} services?",
-            "This will stop all listed non-system services.",
-            ok="Stop All",
-            cancel="Cancel",
-        )
-        
-        if confirm != 1:
-            return
-        
-        for svc in targets:
-            self.run_stop(svc.get("pid"))
-        
-        # Refresh after a short delay
-        threading.Timer(1.0, self.refresh).start()
-    
-    def run_stop(self, pid: Any) -> None:
-        """Run stop command."""
-        if pid is None:
-            return
-        
-        cli_path = resolve_cli_path(self.config)
-        if not cli_path:
-            rumps.alert("Error", "CLI not found.")
-            return
-        
-        args = [cli_path, "stop", "--pid", str(pid), "--yes"]
-        try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                error = result.stderr.strip() or "Unknown error"
-                rumps.alert("Stop Failed", error)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            rumps.alert("Error", f"Failed to stop: {e}")
-        
-        # Refresh after stopping
-        self.refresh()
-    
-    def show_settings(self, _sender: rumps.MenuItem) -> None:
-        """Show settings window."""
-        # CLI Path
-        panel = NSOpenPanel.openPanel()
-        panel.setCanChooseFiles_(True)
-        panel.setCanChooseDirectories_(False)
-        panel.setAllowsMultipleSelection_(False)
-        panel.setMessage_("Select the portchecker CLI executable")
-        
-        if panel.runModal() == NSModalResponseOK:
-            url = panel.URL()
-            if url:
-                selected = str(url.path())
-                if os.path.isfile(selected) and os.access(selected, os.X_OK):
-                    self.config["cli_path"] = selected
-                    save_config(self.config)
-                    self.refresh()
-                else:
-                    rumps.alert("Invalid", "Please choose an executable file.")
-    
-    def show_about(self, _sender: rumps.MenuItem) -> None:
-        """Show about dialog."""
-        rumps.alert(
-            "Port Checker",
-            f"Version {APP_VERSION}\n\nA menu bar app for managing development services."
-        )
+        ) == 1:
+            success, msg = stop_process(proc.pid)
+            if success:
+                threading.Thread(target=self._scan, daemon=True).start()
+            else:
+                rumps.alert("Failed to stop", msg)
+
+    def _on_refresh(self, _: Any) -> None:
+        if not self._scanning:
+            threading.Thread(target=self._scan, daemon=True).start()
+
+    def _toggle_auto_refresh(self, _: Any) -> None:
+        self._auto_refresh = not self._auto_refresh
+        self._save_prefs()
+        self._start_timer()
+        self._rebuild()
+
+    def _make_interval_setter(self, secs: int):
+        def callback(_: Any) -> None:
+            self._refresh_interval = secs
+            self._auto_refresh = True
+            self._save_prefs()
+            self._start_timer()
+            self._rebuild()
+        return callback
+
+    def _toggle_show_system(self, _: Any) -> None:
+        self._show_system = not self._show_system
+        self._save_prefs()
+        threading.Thread(target=self._scan, daemon=True).start()
+
+    def _toggle_notifications(self, _: Any) -> None:
+        self._notifications = not self._notifications
+        self._save_prefs()
+        self._rebuild()
 
 
 if __name__ == "__main__":

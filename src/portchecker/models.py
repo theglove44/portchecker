@@ -41,8 +41,13 @@ class PortProcess:
 
 # Constants
 SYSTEM_PROCESSES = {
+    # Unix / Linux daemons
     'launchd', 'systemd', 'sshd', 'httpd', 'nginx', 'apache2',
-    'mysqld', 'postgresql', 'dockerd', 'kubelet', 'cron'
+    'mysqld', 'postgresql', 'dockerd', 'kubelet', 'cron',
+    # macOS system processes (run as the user but are OS infrastructure)
+    'rapportd', 'controlcenter', 'universalcontrol', 'displaycontrols',
+    'airplayd', 'sharingd', 'bluetoothd', 'screensharingd',
+    'remotepairingsecurepairing', 'remotepairingd',
 }
 SYSTEM_USERS = {'root', 'daemon'}
 RISKY_PORTS = {21, 23, 445, 3389, 5900}

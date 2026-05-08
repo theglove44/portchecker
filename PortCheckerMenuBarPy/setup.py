@@ -5,12 +5,21 @@ DATA_FILES = []
 
 OPTIONS = {
     "argv_emulation": False,
+    "packages": ["portchecker"],
+    "includes": [
+        "portchecker.scanner",
+        "portchecker.models",
+        "portchecker.security",
+        "portchecker.fingerprint",
+        "portchecker.process_control",
+        "portchecker.config",
+    ],
     "plist": {
         "CFBundleName": "Port Checker",
         "CFBundleDisplayName": "Port Checker",
         "CFBundleIdentifier": "com.portchecker.menubar",
-        "LSUIElement": True,
         "CFBundleShortVersionString": "1.0.0",
+        "LSUIElement": True,
     },
 }
 

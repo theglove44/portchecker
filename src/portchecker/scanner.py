@@ -25,22 +25,24 @@ def friendly_app_name(command: str, cmdline: List[str]) -> str:
     if not cmdline:
         return command
 
-    exe_name = os.path.basename(cmdline[0]).lower()
+    exe = os.path.basename(cmdline[0])
+    exe_lower = exe.lower()
 
     # Handle Java with -jar
-    if exe_name == 'java' and '-jar' in cmdline:
+    if exe_lower == 'java' and '-jar' in cmdline:
         idx = cmdline.index('-jar')
         if idx + 1 < len(cmdline):
-            return f"{command} ({os.path.basename(cmdline[idx + 1])})"
+            return f"{exe} ({os.path.basename(cmdline[idx + 1])})"
 
-    # Handle interpreted languages (python, node, ruby)
-    if exe_name.startswith('python') or exe_name in {'node', 'ruby'}:
+    # Handle interpreted languages: show the script name alongside the runtime
+    if exe_lower.startswith('python') or exe_lower in {'node', 'ruby', 'bun', 'deno'}:
         for arg in cmdline[1:]:
             if arg.startswith('-'):
                 continue
-            return f"{command} ({os.path.basename(arg)})"
+            return f"{exe} ({os.path.basename(arg)})"
 
-    return command
+    # Use the full executable name from psutil (lsof truncates at 8 chars)
+    return exe
 
 
 def scan_ports() -> List[PortProcess]:
@@ -110,18 +112,19 @@ def enrich_processes(processes: List[PortProcess], show_system: bool) -> List[Po
     visible = []
 
     for proc in processes:
-        # Filter system processes if not showing them
-        if proc.is_system and not show_system:
-            continue
-
         try:
             psutil_proc = psutil.Process(proc.pid)
+            cmdline = psutil_proc.cmdline()
 
-            # Get friendly app name
-            proc.app = friendly_app_name(proc.command, psutil_proc.cmdline())
+            # Get friendly app name (uses full exe path, not lsof-truncated command)
+            proc.app = friendly_app_name(proc.command, cmdline)
 
             # Get username
             proc.user = psutil_proc.username() or proc.user
+
+            # Re-check is_system with the full process name — lsof truncates to
+            # 8 chars so "ControlCenter" arrives as "ControlCe" at scan time.
+            proc.is_system = is_system_process(psutil_proc.name(), proc.user)
 
             # Get project directory
             try:
@@ -139,6 +142,10 @@ def enrich_processes(processes: List[PortProcess], show_system: bool) -> List[Po
         except (psutil.AccessDenied, OSError):
             proc.app = proc.command
             proc.project = 'Unavailable'
+
+        # Filter after enrichment so the full psutil name drives the is_system check
+        if proc.is_system and not show_system:
+            continue
 
         visible.append(proc)
 
