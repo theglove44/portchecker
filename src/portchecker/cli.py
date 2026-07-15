@@ -1,7 +1,7 @@
 """Command-line interface for Port Checker."""
 
 import json
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import typer
 from rich.console import Console
@@ -187,7 +187,7 @@ def fingerprint(
     enrich_with_fingerprints(processes)
 
     # Filter to identified services
-    results = []
+    results: List[Dict[str, Any]] = []
     for proc in processes:
         if proc.fingerprint and proc.fingerprint['service'] != 'Unknown':
             results.append({
@@ -207,7 +207,7 @@ def fingerprint(
         return
 
     # Group by service type
-    groups = {}
+    groups: Dict[str, List[Dict[str, Any]]] = {}
     for r in results:
         groups.setdefault(r['service'], []).append(r)
 
@@ -354,6 +354,9 @@ def fav_list(
     favs = load_favorites()
 
     if not favs:
+        if json_out:
+            print("[]")
+            return
         console.print("[yellow]No favorites.[/yellow]")
         return
 

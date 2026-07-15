@@ -2,10 +2,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var scanner: PortScanner
-    @Environment(\.dismiss) private var dismiss
     
     // Settings
-    @AppStorage("showSystemServices") private var showSystemServices = false
+    @AppStorage("portchecker_showSystem") private var showSystemServices = false
     @AppStorage("showMenuBarBadge") private var showMenuBarBadge = true
     @AppStorage("autoRefresh") private var autoRefresh = false
     @AppStorage("autoRefreshInterval") private var autoRefreshInterval = 30
@@ -13,34 +12,14 @@ struct SettingsView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Text("Settings")
-                    .font(.system(size: 16, weight: .semibold))
-                
-                Spacer()
-                
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-            }
-            .padding()
-            
-            Divider()
-            
             // Settings Form
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // Display Section
                     SettingsSection(title: "Display") {
                         Toggle("Show system services", isOn: $showSystemServices)
-                            .onChange(of: showSystemServices) { _ in
-                                scanner.refresh()
+                            .onChange(of: showSystemServices) { _, value in
+                                scanner.showSystemServices = value
                             }
                         
                         Toggle("Show count badge in menu bar", isOn: $showMenuBarBadge)
@@ -158,7 +137,8 @@ struct SettingsView: View {
                 .padding()
             }
         }
-        .frame(width: 400, height: 500)
+        .padding()
+        .frame(width: 440, height: 540)
         .sheet(isPresented: $showingAddFavorite) {
             AddFavoriteView { port, name, note in
                 scanner.addFavorite(port: port, name: name, note: note)
@@ -167,6 +147,8 @@ struct SettingsView: View {
         .onAppear {
             scanner.loadFavorites()
         }
+        .onChange(of: autoRefresh) { _, _ in scanner.configureAutoRefresh() }
+        .onChange(of: autoRefreshInterval) { _, _ in scanner.configureAutoRefresh() }
     }
     
     @State private var showingAddFavorite = false

@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 # Config paths
 CONFIG_DIR = Path.home() / ".config" / "portchecker"
@@ -21,7 +21,7 @@ def load_config() -> Dict[str, Any]:
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
     return {}
@@ -34,18 +34,19 @@ def save_config(config: Dict[str, Any]) -> None:
         json.dump(config, f, indent=2)
 
 
-def load_favorites() -> List[Dict]:
+def load_favorites() -> List[Dict[str, Any]]:
     """Load favorite ports from file."""
     if FAVORITES_FILE.exists():
         try:
             with open(FAVORITES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f).get("favorites", [])
+                data = cast(Dict[str, Any], json.load(f))
+                return cast(List[Dict[str, Any]], data.get("favorites", []))
         except (json.JSONDecodeError, OSError):
             pass
     return []
 
 
-def save_favorites(favs: List[Dict]) -> None:
+def save_favorites(favs: List[Dict[str, Any]]) -> None:
     """Save favorite ports to file."""
     ensure_config_dir()
     with open(FAVORITES_FILE, 'w', encoding='utf-8') as f:
@@ -74,7 +75,7 @@ def remove_favorite(identifier: str) -> bool:
     return False
 
 
-def get_favorite_by_name(name: str) -> Dict | None:
+def get_favorite_by_name(name: str) -> Dict[str, Any] | None:
     """Get a favorite by name (case-insensitive)."""
     favs = load_favorites()
     return next((f for f in favs if f['name'].lower() == name.lower()), None)
@@ -89,8 +90,10 @@ def get_cli_path() -> str | None:
 
     # Check config
     config = load_config()
-    config_path = config.get("cli_path", "").strip()
-    if config_path and os.path.isfile(config_path) and os.access(config_path, os.X_OK):
-        return config_path
+    config_path = config.get("cli_path", "")
+    if isinstance(config_path, str):
+        config_path = config_path.strip()
+        if config_path and os.path.isfile(config_path) and os.access(config_path, os.X_OK):
+            return config_path
 
     return None

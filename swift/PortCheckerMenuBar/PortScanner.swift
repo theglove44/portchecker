@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import SwiftUI
+import UserNotifications
 
 // MARK: - Models
 
@@ -40,7 +41,12 @@ struct PortService: Codable, Identifiable, Hashable {
 struct ServiceFingerprint: Codable, Hashable {
     let service: String
     let version: String
-    let protocol: String
+    let transportProtocol: String
+
+    enum CodingKeys: String, CodingKey {
+        case service, version
+        case transportProtocol = "protocol"
+    }
 }
 
 struct SecurityIssue: Codable, Hashable {
@@ -57,8 +63,15 @@ struct Favorite: Codable, Identifiable, Hashable {
     var id: Int { port }
 }
 
+struct ServiceGroup: Identifiable {
+    let name: String
+    let services: [PortService]
+    var id: String { name }
+}
+
 // MARK: - Port Scanner
 
+@MainActor
 final class PortScanner: ObservableObject {
     @Published var services: [PortService] = []
     @Published var isLoading = false
@@ -78,13 +91,16 @@ final class PortScanner: ObservableObject {
     
     private let cliPathKey = "portchecker_cliPath"
     private let showSystemKey = "portchecker_showSystem"
-    private let favoritesKey = "portchecker_favorites"
     private var refreshTimer: Timer?
-    private var cancellables = Set<AnyCancellable>()
+    private var previousServices: [PortService] = []
     
     let appVersion = "1.0.0"
     
     var bundledCliPath: String? {
+        Bundle.main.path(forResource: "portchecker", ofType: nil)
+    }
+
+    nonisolated private static var bundledCLIPath: String? {
         Bundle.main.path(forResource: "portchecker", ofType: nil)
     }
     
@@ -92,9 +108,10 @@ final class PortScanner: ObservableObject {
         let defaults = UserDefaults.standard
         self.cliPath = defaults.string(forKey: cliPathKey) ?? ""
         self.showSystemServices = defaults.bool(forKey: showSystemKey)
-        
+
         loadFavorites()
         setupAutoRefresh()
+        requestNotificationPermission()
     }
     
     // MARK: - Computed Properties
@@ -136,6 +153,17 @@ final class PortScanner: ObservableObject {
         
         return groups
     }
+
+    var sidebarGroups: [ServiceGroup] {
+        let groups = groupedServices
+        var result: [ServiceGroup] = []
+        if let favorites = groups["__favorites"] { result.append(ServiceGroup(name: "Favorites", services: favorites)) }
+        for project in groups.keys.filter({ $0 != "__favorites" && $0 != "__system" }).sorted() {
+            result.append(ServiceGroup(name: project == "Unknown" ? "Other" : project, services: groups[project] ?? []))
+        }
+        if let system = groups["__system"] { result.append(ServiceGroup(name: "System Services", services: system)) }
+        return result
+    }
     
     // MARK: - Refresh
     
@@ -145,38 +173,43 @@ final class PortScanner: ObservableObject {
         isLoading = true
         errorMessage = nil
         let showSystem = showSystemServices
+        let configuredCLIPath = cliPath
         
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Self.fetchServices(showSystem: showSystem, configuredCLIPath: configuredCLIPath)
             
-            let result = self.fetchServices(showSystem: showSystem)
-            
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 self.isLoading = false
                 
                 switch result {
                 case .success(let services):
+                    let previous = self.previousServices
                     self.services = services
-                    self.checkForChanges(previous: self.services, current: services)
-                case .failure(let message):
+                    self.previousServices = services
+                    self.checkForChanges(previous: previous, current: services)
+                case .failure(let error):
                     self.services = []
-                    self.errorMessage = message
+                    self.errorMessage = error.message
                 }
             }
         }
     }
     
     private func setupAutoRefresh() {
-        // Auto-refresh when enabled
-        Timer.publish(every: 5, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                guard let self = self,
-                      UserDefaults.standard.bool(forKey: "autoRefresh"),
-                      !self.isLoading else { return }
+        refreshTimer?.invalidate()
+        guard UserDefaults.standard.bool(forKey: "autoRefresh") else { return }
+        let interval = max(10, UserDefaults.standard.double(forKey: "autoRefreshInterval"))
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isLoading else { return }
                 self.refresh()
             }
-            .store(in: &cancellables)
+        }
+    }
+
+    func configureAutoRefresh() {
+        setupAutoRefresh()
     }
     
     private func checkForChanges(previous: [PortService], current: [PortService]) {
@@ -220,7 +253,7 @@ final class PortScanner: ObservableObject {
     
     // MARK: - CLI Path
     
-    func chooseCliPath() {
+    @MainActor func chooseCliPath() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -235,33 +268,34 @@ final class PortScanner: ObservableObject {
     }
     
     private func resolveCliPath() -> String? {
+        Self.resolveCliPath(configuredPath: cliPath)
+    }
+
+    nonisolated private static func resolveCliPath(configuredPath: String) -> String? {
         // Check configured path
-        if isExecutable(path: cliPath) {
-            return cliPath
+        if isExecutable(path: configuredPath) {
+            return configuredPath
         }
         
         // Check bundled CLI
-        if let bundled = bundledCliPath, isExecutable(path: bundled) {
+        if let bundled = bundledCLIPath, isExecutable(path: bundled) {
             return bundled
         }
         
         // Check PATH
         if let found = findInPath("portchecker") {
-            DispatchQueue.main.async {
-                self.cliPath = found
-            }
             return found
         }
         
         return nil
     }
     
-    private func isExecutable(path: String) -> Bool {
+    nonisolated private static func isExecutable(path: String) -> Bool {
         guard !path.isEmpty else { return false }
         return FileManager.default.isExecutableFile(atPath: path)
     }
     
-    private func findInPath(_ name: String) -> String? {
+    nonisolated private static func findInPath(_ name: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = [name]
@@ -287,9 +321,9 @@ final class PortScanner: ObservableObject {
     
     // MARK: - Service Fetching
     
-    private func fetchServices(showSystem: Bool) -> Result<[PortService], String> {
-        guard let cli = resolveCliPath() else {
-            return .failure("CLI not found. Please install portchecker CLI or set path in Settings.")
+    nonisolated private static func fetchServices(showSystem: Bool, configuredCLIPath: String) -> Result<[PortService], CLIError> {
+        guard let cli = resolveCliPath(configuredPath: configuredCLIPath) else {
+            return .failure(CLIError(message: "CLI not found. Please install portchecker CLI or set path in Settings."))
         }
         
         var args = ["scan", "--json", "--external"]
@@ -306,20 +340,20 @@ final class PortScanner: ObservableObject {
             }
             
             guard let data = trimmed.data(using: .utf8) else {
-                return .failure("Failed to decode CLI output")
+                return .failure(CLIError(message: "Failed to decode CLI output"))
             }
             
             let decoded = try JSONDecoder().decode([PortService].self, from: data)
             return .success(decoded)
             
         } catch let error as CLIError {
-            return .failure(error.message)
+            return .failure(error)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure(CLIError(message: error.localizedDescription))
         }
     }
     
-    private func runCLI(cliPath: String, args: [String]) throws -> String {
+    nonisolated private static func runCLI(cliPath: String, args: [String]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
@@ -368,25 +402,23 @@ final class PortScanner: ObservableObject {
         isLoading = true
         errorMessage = nil
         
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
+        guard let cli = resolveCliPath() else {
+            errorMessage = "CLI not found"
+            isLoading = false
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
             defer {
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
                     self.isLoading = false
                     self.refresh()
                 }
             }
             
-            guard let cli = self.resolveCliPath() else {
-                DispatchQueue.main.async {
-                    self.errorMessage = "CLI not found"
-                }
-                return
-            }
-            
             for service in services {
-                _ = try? self.runCLI(cliPath: cli, args: [
+                _ = try? Self.runCLI(cliPath: cli, args: [
                     "stop",
                     "--pid", "\(service.pid)",
                     "--yes"
@@ -398,38 +430,30 @@ final class PortScanner: ObservableObject {
     // MARK: - Favorites
     
     func loadFavorites() {
-        guard let data = UserDefaults.standard.data(forKey: favoritesKey) else {
+        guard let cli = resolveCliPath(), let output = try? Self.runCLI(cliPath: cli, args: ["fav-list", "--json"]),
+              let data = output.data(using: .utf8), let decoded = try? JSONDecoder().decode([Favorite].self, from: data) else {
             favorites = []
             return
         }
-        
-        do {
-            favorites = try JSONDecoder().decode([Favorite].self, from: data)
-        } catch {
-            favorites = []
-        }
+        favorites = decoded
     }
     
     func saveFavorites() {
-        do {
-            let data = try JSONEncoder().encode(favorites)
-            UserDefaults.standard.set(data, forKey: favoritesKey)
-        } catch {
-            print("Failed to save favorites: \(error)")
-        }
+        // CLI owns the shared favorites file. Mutations happen through its commands.
     }
     
     func addFavorite(port: Int, name: String, note: String) {
         guard !favorites.contains(where: { $0.port == port }) else { return }
-        
-        favorites.append(Favorite(port: port, name: name, note: note))
-        saveFavorites()
+        guard let cli = resolveCliPath() else { return }
+        _ = try? Self.runCLI(cliPath: cli, args: ["fav-add", "\(port)", name, "--note", note])
+        loadFavorites()
         refresh()
     }
     
     func removeFavorite(_ favorite: Favorite) {
-        favorites.removeAll { $0.port == favorite.port }
-        saveFavorites()
+        guard let cli = resolveCliPath() else { return }
+        _ = try? Self.runCLI(cliPath: cli, args: ["fav-remove", "\(favorite.port)"])
+        loadFavorites()
         refresh()
     }
     

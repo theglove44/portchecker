@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MenuContentView: View {
     @EnvironmentObject var scanner: PortScanner
-    @State private var showingSettings = false
     @State private var hoveredService: PortService?
     
     var body: some View {
@@ -35,13 +34,9 @@ struct MenuContentView: View {
             Divider()
             
             // Footer Actions
-            FooterView(showingSettings: $showingSettings)
+            FooterView()
         }
         .frame(width: 380)
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-                .environmentObject(scanner)
-        }
         .onAppear {
             scanner.refresh()
         }
@@ -224,6 +219,7 @@ struct ServiceRow: View {
     let isSystem: Bool
     @EnvironmentObject var scanner: PortScanner
     @State private var showingDetails = false
+    @State private var showingStopConfirmation = false
     
     var portColor: Color {
         if service.isExposed {
@@ -277,7 +273,7 @@ struct ServiceRow: View {
                     .buttonStyle(.borderless)
                     
                     Button {
-                        scanner.kill(service: service)
+                        showingStopConfirmation = true
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 13))
@@ -299,6 +295,12 @@ struct ServiceRow: View {
         .sheet(isPresented: $showingDetails) {
             ServiceDetailView(service: service)
                 .environmentObject(scanner)
+        }
+        .alert("Stop \(service.app)?", isPresented: $showingStopConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Stop", role: .destructive) { scanner.kill(service: service) }
+        } message: {
+            Text("This stops the process listening on port \(service.port).")
         }
     }
 }
@@ -325,7 +327,6 @@ struct PortBadge: View {
 
 // MARK: - Footer
 struct FooterView: View {
-    @Binding var showingSettings: Bool
     @EnvironmentObject var scanner: PortScanner
     
     var body: some View {
@@ -342,14 +343,11 @@ struct FooterView: View {
             
             Spacer()
             
-            Button {
-                showingSettings = true
-            } label: {
+            SettingsLink {
                 Label("Settings", systemImage: "gear")
                     .font(.system(size: 12))
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut(",", modifiers: .command)
             
             Divider()
                 .frame(height: 14)

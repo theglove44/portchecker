@@ -62,38 +62,11 @@ chmod +x "$RESOURCES_DIR/portchecker"
 
 echo -e "${GREEN}✓ CLI copied to app resources${NC}"
 
-# Step 3: Build Swift app (if Xcode is available)
-if command -v xcodebuild &> /dev/null; then
-    echo -e "\n${YELLOW}Step 3: Building Swift menu bar app...${NC}"
-    
-    cd "$SWIFT_DIR"
-    
-    # Create Xcode project if it doesn't exist
-    if [ ! -d "PortCheckerMenuBar.xcodeproj" ]; then
-        echo -e "${YELLOW}Note: Xcode project not found. Please create it manually.${NC}"
-        echo "1. Open Xcode"
-        echo "2. Create new macOS App project"
-        echo "3. Copy the Swift files from $SWIFT_DIR"
-        echo "4. Build and archive"
-    else
-        xcodebuild \
-            -project PortCheckerMenuBar.xcodeproj \
-            -scheme PortCheckerMenuBar \
-            -configuration Release \
-            -derivedDataPath "$BUILD_DIR/DerivedData" \
-            build
-        
-        # Copy to dist
-        APP_PATH="$BUILD_DIR/DerivedData/Build/Products/Release/Port Checker.app"
-        if [ -d "$APP_PATH" ]; then
-            cp -R "$APP_PATH" "$DIST_DIR/"
-            echo -e "${GREEN}✓ Menu bar app built at: $DIST_DIR/Port Checker.app${NC}"
-        fi
-    fi
-else
-    echo -e "${YELLOW}Xcode not found. Skipping Swift app build.${NC}"
-    echo "Install Xcode to build the menu bar app."
-fi
+# Step 3: Build native SwiftUI app
+echo -e "\n${YELLOW}Step 3: Building native SwiftUI menu bar app...${NC}"
+cd "$PROJECT_ROOT"
+./script/build_and_run.sh --build
+echo -e "${GREEN}✓ Native app built at: $DIST_DIR/Port Checker.app${NC}"
 
 # Step 4: Build Python menu bar app (fallback)
 echo -e "\n${YELLOW}Step 4: Building Python menu bar app (fallback)...${NC}"

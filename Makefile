@@ -1,6 +1,6 @@
 # Port Checker Makefile
 
-.PHONY: all install install-dev test lint format clean build build-cli build-app run dev help
+.PHONY: all install install-dev test lint format clean build build-cli build-pyapp build-swiftapp run dev help
 
 PYTHON := python3
 VENV := venv
@@ -31,7 +31,8 @@ help:
 	@echo "  Building:"
 	@echo "    make build        - Build everything (CLI + apps)"
 	@echo "    make build-cli    - Build standalone CLI binary"
-	@echo "    make build-app    - Build menu bar app"
+	@echo "    make build-pyapp  - Build Python fallback menu bar app"
+	@echo "    make build-swiftapp - Build native macOS menu bar app"
 	@echo ""
 	@echo "  Maintenance:"
 	@echo "    make clean        - Clean build artifacts"
@@ -95,7 +96,7 @@ build:
 	./scripts/build.sh
 
 # Build standalone CLI binary
-build-cli: install
+build-cli: install-dev
 	mkdir -p dist
 	$(VENV_BIN)/pyinstaller \
 		--onefile \
@@ -118,27 +119,15 @@ build-cli: install
 	@echo "✓ CLI binary built at: dist/portchecker"
 
 # Build Python menu bar app
-build-pyapp: install
+build-pyapp: install-dev
 	cd PortCheckerMenuBarPy && ../$(VENV_BIN)/python setup.py py2app
 	cp -R "PortCheckerMenuBarPy/dist/Port Checker.app" "dist/Port Checker (Python).app"
 	@echo "✓ Python menu bar app built at: dist/Port Checker (Python).app"
 
 # Build Swift menu bar app (requires Xcode)
 build-swiftapp:
-	@if ! command -v xcodebuild >/dev/null 2>&1; then \
-		echo "Error: Xcode not found. Install Xcode to build the Swift app."; \
-		exit 1; \
-	fi
-	mkdir -p swift/PortCheckerMenuBar/Resources
-	cp dist/portchecker swift/PortCheckerMenuBar/Resources/ 2>/dev/null || true
-	cd swift/PortCheckerMenuBar && \
-	xcodebuild -project PortCheckerMenuBar.xcodeproj \
-		-scheme PortCheckerMenuBar \
-		-configuration Release \
-		-derivedDataPath ../../build/DerivedData \
-		build
-	cp -R "build/DerivedData/Build/Products/Release/Port Checker.app" dist/ 2>/dev/null || \
-		echo "Swift app build requires manual Xcode setup. See swift/PortCheckerMenuBar/README.md"
+	./script/build_and_run.sh --build
+	@echo "✓ Native macOS app built at: dist/Port Checker.app"
 
 # Install locally for testing
 install-local: build-cli

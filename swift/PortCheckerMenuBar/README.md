@@ -21,24 +21,15 @@ A native macOS menu bar app built with SwiftUI.
 
 ## Building
 
-### Option 1: Xcode (Development)
-
-1. Open this folder in Xcode
-2. Select "PortCheckerMenuBar" scheme
-3. Build and run (⌘R)
-
-### Option 2: Command Line (Production)
+### Command Line
 
 ```bash
-# Build the app
-xcodebuild -project PortCheckerMenuBar.xcodeproj \
-    -scheme PortCheckerMenuBar \
-    -configuration Release \
-    -derivedDataPath build
-
-# The app will be at:
-# build/Build/Products/Release/Port Checker.app
+make build-swiftapp
+# App: dist/Port Checker.app
 ```
+
+`Package.swift` is the build target. `script/build_and_run.sh` builds the CLI,
+bundles it into a signed local `.app`, and can run or verify the app.
 
 ## Architecture
 

@@ -1,257 +1,206 @@
-# Port Checker 🔌
+# Port Checker
 
-A beautiful macOS menu bar app and CLI tool to view and manage running development services on ports. Never forget to stop a dev server again!
+Port Checker finds TCP ports listening on your Mac, shows which process owns
+each port, checks basic exposure risks, and can stop development services.
 
-## Features
+## Current status
 
-- 📊 **Visual Menu Bar App** - Native macOS SwiftUI interface with rich UI
-- 🔍 **Port Scanning** - Instantly see what's running on your ports
-- 🛡️ **Security Assessment** - Detect exposed services and risky configurations
-- 🔎 **Service Fingerprinting** - Identify what's actually running (MySQL, Redis, etc.)
-- ⭐ **Favorites** - Track your commonly used development ports
-- 🚫 **Safe Stopping** - Built-in protection against killing system services
-- 🔔 **Notifications** - Get notified when services start/stop
-- ⌨️ **Keyboard Shortcuts** - Quick actions with native macOS shortcuts
+| Part | Status | Notes |
+| --- | --- | --- |
+| Python CLI | Primary, working | Source of truth: `src/portchecker/`. Requires Python 3.10+ and macOS `lsof`. |
+| Native SwiftUI app | Buildable development app | SwiftPM target for macOS 14+. Bundles the CLI. Locally ad-hoc signed; no installer or published release. |
+| Python menu bar app | Fallback | py2app build for macOS. Less developed than the CLI. |
 
-## Screenshots
+No Homebrew formula, downloadable GitHub release, or App Store build currently
+exists. Build from this checkout.
 
-![Menu Bar App](docs/screenshot-menu.png)
-*Main menu with grouped services*
+## Easiest setup
 
-![Service Details](docs/screenshot-detail.png)
-*Service details with security info*
+Need:
 
-![Settings](docs/screenshot-settings.png)
-*Settings window*
+- macOS
+- Python 3.10 or newer (`python3 --version`)
+- `make`
+- `lsof` (included with macOS)
 
-## Installation
-
-### Option 1: Homebrew (Recommended)
+Open Terminal. Go to this project folder, then run:
 
 ```bash
-brew install portchecker
-```
-
-### Option 2: Download Release
-
-1. Download the latest release from [Releases](https://github.com/portchecker/portchecker/releases)
-2. Drag "Port Checker.app" to your Applications folder
-3. Optionally copy the CLI: `cp /Applications/Port\ Checker.app/Contents/Resources/portchecker /usr/local/bin/`
-
-### Option 3: Build from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/portchecker/portchecker.git
-cd portchecker
-
-# Build everything (requires Xcode for Swift app)
-make build
-
-# Or build just the CLI
-make build-cli
-
-# Or build Python menu bar app (no Xcode required)
-make build-pyapp
-```
-
-## Usage
-
-### Menu Bar App
-
-Launch "Port Checker" from your Applications folder. The app lives in your menu bar (📊 icon).
-
-**Features:**
-- **Badge Count** - Shows number of active services
-- **Project Grouping** - Services grouped by folder
-- **Favorites** - Pin important services to the top
-- **Security Indicators** - Exposed ports highlighted in orange
-- **Keyboard Shortcuts:**
-  - `⌘R` - Refresh
-  - `⌘,` - Settings
-  - `⌘Q` - Quit
-
-Click a service to see details and stop it.
-
-### CLI
-
-```bash
-# Scan for services
-portchecker scan
-
-# Check specific ports
-portchecker check 3000 8080 5432
-
-# Security assessment with exposure check
-portchecker security
-
-# List exposed ports
-portchecker exposed
-
-# Fingerprint services
-portchecker fingerprint
-
-# Manage favorites
-portchecker fav-add 3000 "Frontend" --note "React dev server"
-portchecker fav-status
-portchecker fav-stop "Frontend"
-
-# Stop services
-portchecker stop 1              # By ID from scan
-portchecker stop --pid 1234     # By PID
-portchecker stop --force        # Force kill
-
-# JSON output for scripting
-portchecker scan --json
-portchecker security --json
-```
-
-## Project Structure
-
-```
-portchecker/
-├── src/portchecker/           # Core Python package (modular)
-│   ├── models.py              # Data models (PortProcess, etc.)
-│   ├── scanner.py             # Port scanning (lsof/psutil)
-│   ├── security.py            # Security assessment
-│   ├── fingerprint.py         # Service fingerprinting
-│   ├── process_control.py     # Start/stop processes
-│   ├── config.py              # Settings/favorites management
-│   └── cli.py                 # CLI interface (typer)
-├── swift/                     # Swift menu bar app
-│   └── PortCheckerMenuBar/    # Native SwiftUI app
-├── PortCheckerMenuBarPy/      # Python menu bar app (fallback)
-├── tests/                     # pytest tests
-├── scripts/                   # Build scripts
-├── Makefile                   # Build automation
-└── pyproject.toml            # Python package config
-```
-
-## Development
-
-### Setup
-
-```bash
-# Create virtual environment and install dependencies
-make install-dev
-
-# Run tests
-make test
-
-# Format code
-make format
-
-# Run linter
-make lint
-
-# Run CLI in dev mode
+cd /path/to/portchecker
+make install
 make run
 ```
 
-### Testing
+Replace `/path/to/portchecker` with actual folder path. First command creates
+`venv/` and installs Port Checker there. Second command scans listening ports.
+
+After setup, use either style:
 
 ```bash
-# Run all tests
-make test
+# Short Makefile form
+make run ARGS="scan"
 
-# Run with coverage
-pytest tests/ -v --cov=src/portchecker --cov-report=html
+# Direct CLI form
+./venv/bin/portchecker scan
 ```
 
-### Building
+## Everyday use
+
+### See running services
 
 ```bash
-# Build CLI only
-make build-cli
+./venv/bin/portchecker scan
+```
 
-# Build Python menu bar app
+Output gives each visible service an ID. IDs are recalculated on every scan.
+
+### Check common development ports
+
+```bash
+./venv/bin/portchecker check 3000 5173 8000 8080
+```
+
+### Stop one service safely
+
+First scan, find service ID, then stop it:
+
+```bash
+./venv/bin/portchecker scan
+./venv/bin/portchecker stop 1
+```
+
+Port Checker shows target and asks for confirmation. Use PID when needed:
+
+```bash
+./venv/bin/portchecker stop --pid 12345
+```
+
+`--yes` skips confirmation. `--force` sends an immediate force kill. Use both
+only when target process is known.
+
+### Check network exposure
+
+```bash
+./venv/bin/portchecker exposed
+./venv/bin/portchecker security
+```
+
+These are local heuristics, not a full security audit.
+
+### Save favorite ports
+
+```bash
+./venv/bin/portchecker fav-add 3000 "Frontend" --note "Local web app"
+./venv/bin/portchecker fav-list
+./venv/bin/portchecker fav-status
+./venv/bin/portchecker fav-stop "Frontend"
+./venv/bin/portchecker fav-remove "Frontend"
+```
+
+Favorites live in `~/.config/portchecker/favorites.json`.
+
+### JSON for scripts
+
+```bash
+./venv/bin/portchecker scan --json
+./venv/bin/portchecker scan --json --external
+./venv/bin/portchecker security --json
+./venv/bin/portchecker fav-list --json
+```
+
+Full command list:
+
+```bash
+make help-cli
+./venv/bin/portchecker COMMAND --help
+```
+
+## Native macOS app
+
+Need macOS 14+ and Xcode with Swift 6 support.
+
+```bash
+make install-dev
+make build-swiftapp
+open "dist/Port Checker.app"
+```
+
+Build flow creates standalone CLI, compiles Swift package, bundles CLI into app,
+and ad-hoc signs local app. Output: `dist/Port Checker.app`.
+
+App provides dashboard, menu bar view, favorites, settings, exposure indicators,
+service details, and guarded process stopping. App uses same CLI and favorites
+file as terminal commands.
+
+## Python menu bar fallback
+
+```bash
+make install-dev
 make build-pyapp
-
-# Build everything (requires Xcode)
-make build
-
-# Clean build artifacts
-make clean
+open "dist/Port Checker (Python).app"
 ```
 
-## Architecture
+Output: `dist/Port Checker (Python).app`. Full Xcode app not required.
 
-### Core Package (`src/portchecker/`)
-
-The Python package is modularized for maintainability:
-
-- **models.py** - `PortProcess` dataclass and constants (port mappings, fingerprints)
-- **scanner.py** - Uses `lsof` for fast port scanning, `psutil` for process enrichment
-- **security.py** - Exposure detection, security scoring, risk assessment
-- **fingerprint.py** - TCP service fingerprinting with banner grabbing
-- **config.py** - JSON-based configuration and favorites storage
-- **cli.py** - Rich CLI using Typer with colored output
-
-### Menu Bar Apps
-
-**Swift App (Recommended):**
-- Native SwiftUI with `MenuBarExtra`
-- Bundles CLI as resource
-- Settings window with `AppStorage`
-- Notifications with `UNUserNotificationCenter`
-- Service grouping and detail popovers
-
-**Python App (Fallback):**
-- Uses `rumps` for menu bar integration
-- Compatible with macOS 12+
-- No Xcode required
-
-## Security Features
-
-- **System Process Protection** - Cannot accidentally stop system services (launchd, sshd, etc.)
-- **Exposure Detection** - Warns when dev servers are accessible from the network
-- **Risk Port Alerts** - Flags potentially dangerous ports (Telnet, FTP, RDP, etc.)
-- **Root User Warnings** - Alerts when services run as root
-- **Confirmation Dialogs** - Always confirm before stopping services
-
-## Configuration
-
-Configuration is stored in `~/.config/portchecker/`:
-
-- `config.json` - App settings
-- `favorites.json` - Favorite ports
-
-## Requirements
-
-- **macOS 14+** (for Swift menu bar app)
-- **macOS 12+** (for Python menu bar app)
-- **Python 3.9+** (for CLI)
-- **Xcode 15+** (for building Swift app)
-- `lsof` command (pre-installed on macOS)
-
-## Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-### Code Style
+## Developer setup
 
 ```bash
-# Format before committing
-make format
-
-# Check linting
+make install-dev
+make test
 make lint
 ```
 
-## License
+Useful targets:
 
-MIT License - see [LICENSE](LICENSE) file for details.
+```bash
+make help
+make run ARGS="scan --external"
+make build-cli
+make build-swiftapp
+make build-pyapp
+make build
+make clean
+```
 
-## Changelog
+`make format` changes files. Run it only when formatting changes are wanted.
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+## Project layout
 
----
+```text
+src/portchecker/                 Python package and CLI
+tests/                           Python tests
+swift/PortCheckerMenuBar/        Active native SwiftUI source
+Package.swift                    Native app SwiftPM manifest
+script/build_and_run.sh          Native app build/run helper
+PortCheckerMenuBarPy/            Python/py2app menu bar fallback
+PortCheckerMenuBar/              Old stale Swift duplicate; do not edit
+scripts/build.sh                 Full build helper
+Makefile                         Supported setup, test, run, and build commands
+```
 
-Made with ❤️ for developers who forget to stop their dev servers.
+## Limitations
+
+- macOS only. Scanner depends on macOS `lsof` output and app targets macOS.
+- Security report uses local rules and exposure checks. It does not replace a
+  firewall review or network scan.
+- Process stopping changes live system state. System processes are filtered and
+  protected, but always verify target.
+- Native app is development-distributed only: ad-hoc signed, not notarized.
+- No CI workflow, package registry release, Homebrew formula, or downloadable
+  release is currently committed.
+
+## Configuration
+
+Runtime files:
+
+```text
+~/.config/portchecker/config.json
+~/.config/portchecker/favorites.json
+```
+
+Set `PORTCHECKER_CLI` to an executable path when Python menu app cannot find CLI.
+
+## Version and licensing
+
+Current package version: `1.0.0`. `pyproject.toml` declares MIT licensing, but
+repository does not currently include a `LICENSE` file.

@@ -1,34 +1,32 @@
 # CLAUDE.md — swift/
 
-This is a **non-building stub**. Editing Swift files here will not produce a
-testable app without additional manual setup.
+Active native app source lives in `swift/PortCheckerMenuBar/`.
 
-## What's actually present
+## Build system
 
-- Source files: `PortCheckerMenuBarApp.swift`, `MenuContentView.swift`,
-  `PortScanner.swift`, `ServiceDetailView.swift`, `SettingsView.swift`
-- `Info.plist`, `PortCheckerMenuBar.xcassets/`
-- `Resources/` — contains a copy of the built `portchecker` CLI binary (dropped
-  in by `make build-swiftapp` via `cp dist/portchecker swift/PortCheckerMenuBar/Resources/`)
-- `README.md` — build instructions
+Root `Package.swift` defines macOS 14+ executable target using Swift 6. No
+`.xcodeproj` is required.
 
-## What's missing
+```bash
+swift build
+make build-swiftapp
+```
 
-**No `.xcodeproj` (or `.xcworkspace`) is committed anywhere in this tree.**
-`make build-swiftapp` runs `xcodebuild -project PortCheckerMenuBar.xcodeproj ...`,
-which will fail immediately — that file doesn't exist. The tree's own
-`README.md` says as much implicitly: its "Building" section instructs a human to
-open Xcode, create a new macOS App project, delete Xcode's scaffold files, and
-add the `.swift` files to the target manually. That one-time manual step has
-never been done and committed.
+`make build-swiftapp` uses `script/build_and_run.sh`: builds Python CLI, copies
+it into app resources, compiles Swift package, creates `dist/Port Checker.app`,
+and ad-hoc signs local bundle.
 
-## Implication for Claude Code
+App is buildable but remains development-distributed. No notarization, installer,
+App Store packaging, or release automation exists.
 
-Do not expect `swift build`, `xcodebuild`, or any CI step to succeed here without
-first creating and committing an `.xcodeproj`. If asked to work on the menu bar
-app surface and a real, buildable result is needed, prefer
-`../PortCheckerMenuBarPy/` (wired to `make build-pyapp`, actually builds via
-py2app) over this Swift stub, unless the user specifically wants Swift.
+## Source tree
 
-There is also an older, stale duplicate of this tree at the repo root
-(`../PortCheckerMenuBar/`) — do not edit that one; see the root `CLAUDE.md`.
+- `PortCheckerMenuBarApp.swift` — scenes, menu extra, settings, app activation
+- `DashboardView.swift` — main window
+- `MenuContentView.swift` — menu bar UI
+- `PortScanner.swift` — CLI bridge and app state
+- `ServiceDetailView.swift` — service details/actions
+- `SettingsView.swift` — settings and favorites
+- `Resources/portchecker` — generated bundled CLI; do not hand-edit
+
+Older root `../PortCheckerMenuBar/` tree is stale duplicate. Do not edit it.

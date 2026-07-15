@@ -6,24 +6,23 @@ under the hood, so the menu bar always shows what ports are currently in use.
 ## Requirements
 
 - macOS 12+ recommended
-- Python 3.9+
+- Python 3.10+
 - Xcode Command Line Tools (not the full Xcode app)
 
 ## Build the app
 
+From repository root:
+
 ```bash
-cd PortCheckerMenuBarPy
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python setup.py py2app
+make install-dev
+make build-pyapp
 ```
 
-This produces `dist/Port Checker.app`.
+This produces `dist/Port Checker (Python).app`.
 
 ## First run
 
-1. Launch the app from `PortCheckerMenuBarPy/dist/Port Checker.app`.
+1. Launch `dist/Port Checker (Python).app`.
 2. Click the menu bar icon.
 3. Choose **Set CLI Path...** and select your `portchecker` executable.
    - Example: `dist/portchecker`

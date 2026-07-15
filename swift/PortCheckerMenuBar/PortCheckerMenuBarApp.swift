@@ -1,11 +1,20 @@
 import SwiftUI
+import AppKit
 
 @main
 struct PortCheckerMenuBarApp: App {
     @StateObject private var scanner = PortScanner()
     @AppStorage("showMenuBarBadge") private var showMenuBarBadge = true
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     
     var body: some Scene {
+        WindowGroup(id: "dashboard") {
+            DashboardView()
+                .environmentObject(scanner)
+                .frame(minWidth: 760, minHeight: 500)
+        }
+        .defaultSize(width: 960, height: 620)
+
         MenuBarExtra {
             MenuContentView()
                 .environmentObject(scanner)
@@ -16,6 +25,24 @@ struct PortCheckerMenuBarApp: App {
             )
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environmentObject(scanner)
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Refresh Services") { scanner.refresh() }
+                    .keyboardShortcut("r", modifiers: .command)
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 

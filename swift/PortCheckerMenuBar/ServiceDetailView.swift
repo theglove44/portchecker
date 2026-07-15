@@ -82,8 +82,8 @@ struct ServiceDetailView: View {
                             if !fingerprint.version.isEmpty {
                                 DetailRow(label: "Version", value: fingerprint.version)
                             }
-                            if !fingerprint.protocol.isEmpty {
-                                DetailRow(label: "Protocol", value: fingerprint.protocol)
+                            if !fingerprint.transportProtocol.isEmpty {
+                                DetailRow(label: "Protocol", value: fingerprint.transportProtocol)
                             }
                         }
                     }
@@ -108,6 +108,18 @@ struct ServiceDetailView: View {
                     copyCommand()
                 } label: {
                     Label("Copy Command", systemImage: "doc.on.doc")
+                }
+
+                Button {
+                    copyEndpoint()
+                } label: {
+                    Label("Copy Address", systemImage: "link")
+                }
+
+                Button {
+                    NSWorkspace.shared.open(URL(string: "http://localhost:\(service.port)")!)
+                } label: {
+                    Label("Open", systemImage: "safari")
                 }
                 
                 if !service.isSystem {
@@ -139,6 +151,12 @@ struct ServiceDetailView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(service.command, forType: .string)
+    }
+
+    private func copyEndpoint() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("localhost:\(service.port)", forType: .string)
     }
     
     private func revealInFinder() {
