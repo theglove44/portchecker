@@ -47,6 +47,10 @@ dev = [
 [project.scripts]
 portchecker = "portchecker.cli:app"
 
+[project.urls]
+Homepage = "https://github.com/theglove44/portchecker"
+Repository = "https://github.com/theglove44/portchecker"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

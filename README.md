@@ -23,16 +23,17 @@ Need:
 - `make`
 - `lsof` (included with macOS)
 
-Open Terminal. Go to this project folder, then run:
+Open Terminal, then copy and run:
 
 ```bash
-cd /path/to/portchecker
+git clone https://github.com/theglove44/portchecker.git
+cd portchecker
 make install
 make run
 ```
 
-Replace `/path/to/portchecker` with actual folder path. First command creates
-`venv/` and installs Port Checker there. Second command scans listening ports.
+`make install` creates `venv/` and installs Port Checker there. `make run` scans
+listening ports.
 
 After setup, use either style:
 
