@@ -38,3 +38,4 @@ swift/PortCheckerMenuBar/Resources/portchecker
 
 # Memsearch index
 .memsearch/
+.central-brain.json
